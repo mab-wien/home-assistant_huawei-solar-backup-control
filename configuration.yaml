@@ -21,7 +21,7 @@
 # =========================
 
 rest:
-  - resource: "https://api.forecast.solar/estimate/48.10/16.44/30/215/12.0"
+  - resource: "https://api.forecast.solar/estimate/:lat/:lon/:dec/:az/:kwp" # CHANGE-REQ!! => See https://doc.forecast.solar/doku.php?id=api:estimate
     method: GET
     scan_interval: 1800  # 30 min
     sensor:
