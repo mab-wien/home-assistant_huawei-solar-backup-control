@@ -1,23 +1,11 @@
 # =========================
-# PV/ESS Backup-Reserve Auto (EMMA + Forecast.Solar) + Peak-Cutoff
-# FINAL (Rampe 80 -> 0 in 10%-Schritten, "so spät wie möglich")
-#
-# Idee:
-# - Nach Tages-Peak (sensor.power_highest_peak_time_today_2) zählt "heute" nicht mehr:
-#   -> Suchstart wird auf morgen 00:00 gesetzt
-# - Wir suchen ab Suchstart den Zeitpunkt, wann PV die relevante Last deckt
-#   1) Ø-Last (EMMA 30min Ø, min 1000W)
-#   2) wenn Ø-Last nicht erreichbar -> fallback 1000W
-#   3) wenn selbst 1000W nicht erreichbar -> FailSafe Zielreserve 80%
-#
-# Rampe:
-# - Mindestreserve (%) = Energiebedarf bis Schnittpunkt / Batterie (inkl. Effizienz)
-# - Zielreserve = Mindestreserve auf 10%-Stufen AUFRUNDEN, max 80%
-# - Wenn Minuten <= 0 (PV übernimmt) -> Mindestreserve 0 -> Zielreserve 0
+# PV/ESS Backup-Reserve Auto (AGGRESSIVE + LIVE-CORRECTED)
+# - Forecast.Solar via REST -> sensor.forecastsolar_raw_2 (attr: watts)
+# - Live PV -> sensor.emma_pv_ausgangsleistung
+# - Load -> sensor.emma_ladestrom (Statistics mean 30min)
 #
 # Output:
-# - Setzt number.wechselrichter_backup_power_ladestand alle 5 Minuten
-# - Ampel (ok / fallback_1000w / fail_safe_80) + Mushroom Card möglich
+# - sensor.backup_reserve_ziel  -> written to number.wechselrichter_backup_power_ladestand
 # =========================
 
 rest:
@@ -33,6 +21,7 @@ rest:
           - watts
 
 sensor:
+  # 30min Ø-Last aus EMMA Ladestrom
   - platform: statistics
     name: "EMMA Last 30min Durchschnitt"
     entity_id: sensor.emma_ladestrom
@@ -40,9 +29,53 @@ sensor:
     max_age:
       minutes: 30
 
+  # 15min Glättung des PV-Korrekturfaktors
+  - platform: statistics
+    name: "PV Korrekturfaktor 15min"
+    entity_id: sensor.pv_forecast_korrekturfaktor
+    state_characteristic: mean
+    max_age:
+      minutes: 15
+
 template:
   - sensor:
+
+      # -------------------------
+      # A) Forecast "jetzt" aus dem watts-Dict (Stunden-Key)
+      # -------------------------
+      - name: "PV Forecast jetzt (W)"
+        unique_id: pv_forecast_now_w
+        unit_of_measurement: "W"
+        state: >
+          {% set watts = state_attr('sensor.forecastsolar_raw_2','watts') %}
+          {% if watts is mapping %}
+            {% set key = now().replace(minute=0, second=0, microsecond=0) | as_local %}
+            {% set k = key.strftime('%Y-%m-%d %H:00:00') %}
+            {{ (watts.get(k, 0) | float(0)) | round(0) }}
+          {% else %}
+            0
+          {% endif %}
+
+      # -------------------------
+      # B) Dynamischer Forecast-Korrekturfaktor aus Live/Forecast_now
+      # Clamp: 0.4 .. 1.5 (AGGRESSIV)
+      # -------------------------
+      - name: "PV Forecast Korrekturfaktor"
+        unique_id: pv_forecast_korrekturfaktor
+        state: >
+          {% set pv_live = states('sensor.emma_pv_ausgangsleistung') | float(0) %}
+          {% set pv_fc = states('sensor.pv_forecast_jetzt_w') | float(0) %}
+          {% if pv_fc <= 80 %}
+            1.0
+          {% else %}
+            {% set raw = pv_live / pv_fc %}
+            {% set k = [ [raw, 0.4] | max, 1.5 ] | min %}
+            {{ k | round(2) }}
+          {% endif %}
+
+      # -------------------------
       # 0) Last für Berechnung: Ø-Last, aber min. 1000W
+      # -------------------------
       - name: "Last für Berechnung (Ø, min 1000W)"
         unique_id: load_for_calc_avg_min_1000
         unit_of_measurement: "W"
@@ -50,33 +83,20 @@ template:
           {% set avg = states('sensor.emma_last_30min_durchschnitt') | float(0) %}
           {{ [avg, 1000] | max | round(0) }}
 
-      # 1) Suchstart: nach Peak gilt morgen 00:00, sonst jetzt
-      - name: "PV Suchstart (nach Peak = morgen)"
-        unique_id: pv_search_start_after_peak
-        device_class: timestamp
-        state: >
-          {% set peak = states('sensor.power_highest_peak_time_today_2') %}
-          {% set peak_dt = (as_datetime(peak) | as_local) if peak not in ['unknown','unavailable','none','None',''] else none %}
-          {% if peak_dt is not none and now() > peak_dt %}
-            {{ ((now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)) | as_local | isoformat }}
-          {% else %}
-            {{ now() | as_local | isoformat }}
-          {% endif %}
-
-      # 2) PV Zeitpunkt deckt Ø-Last (ab Suchstart)
+      # -------------------------
+      # 1) PV Zeitpunkt deckt Ø-Last (ab jetzt, KEINE Peak-Sperre)
+      # -------------------------
       - name: "PV Zeitpunkt deckt Ø-Last"
         unique_id: pv_time_covers_avg_load
         device_class: timestamp
         state: >
           {% set watts = state_attr('sensor.forecastsolar_raw_2', 'watts') %}
           {% set load = states('sensor.last_fuer_berechnung_ø_min_1000w') | float(0) %}
-          {% set start_s = states('sensor.pv_suchstart_nach_peak_morgen') %}
-          {% set start_dt = (as_datetime(start_s) | as_local) if start_s not in ['unknown','unavailable','none','None',''] else now() %}
           {% if watts is mapping and load > 0 %}
             {% set ns = namespace(found=None) %}
             {% for t,p in (watts | dictsort) %}
               {% set dt = (as_datetime(t) | as_local) %}
-              {% if dt >= start_dt and ns.found is none and (p | float(0)) >= load %}
+              {% if dt >= now() and ns.found is none and (p | float(0)) >= load %}
                 {% set ns.found = t %}
               {% endif %}
             {% endfor %}
@@ -89,20 +109,20 @@ template:
             {{ none }}
           {% endif %}
 
-      # 3) PV Zeitpunkt deckt 1000W (Fallback, ab Suchstart)
+      # -------------------------
+      # 2) PV Zeitpunkt deckt 1000W (Fallback)
+      # -------------------------
       - name: "PV Zeitpunkt deckt 1000W"
         unique_id: pv_time_covers_1000w
         device_class: timestamp
         state: >
           {% set threshold = 1000 %}
           {% set watts = state_attr('sensor.forecastsolar_raw_2', 'watts') %}
-          {% set start_s = states('sensor.pv_suchstart_nach_peak_morgen') %}
-          {% set start_dt = (as_datetime(start_s) | as_local) if start_s not in ['unknown','unavailable','none','None',''] else now() %}
           {% if watts is mapping %}
             {% set ns = namespace(found=None) %}
             {% for t,p in (watts | dictsort) %}
               {% set dt = (as_datetime(t) | as_local) %}
-              {% if dt >= start_dt and ns.found is none and (p | float(0)) >= threshold %}
+              {% if dt >= now() and ns.found is none and (p | float(0)) >= threshold %}
                 {% set ns.found = t %}
               {% endif %}
             {% endfor %}
@@ -115,7 +135,9 @@ template:
             {{ none }}
           {% endif %}
 
-      # 4) Effektiver PV-Zeitpunkt: Ø-Last, sonst 1000W, sonst none
+      # -------------------------
+      # 3) Effektiver PV-Zeitpunkt: Ø-Last, sonst 1000W, sonst none
+      # -------------------------
       - name: "PV Zeitpunkt deckt effektive Last"
         unique_id: pv_time_covers_effective_load
         device_class: timestamp
@@ -130,7 +152,9 @@ template:
             {{ none }}
           {% endif %}
 
-      # 5) Minuten bis PV effektive Last deckt
+      # -------------------------
+      # 4) Minuten bis PV effektive Last deckt
+      # -------------------------
       - name: "Minuten bis PV effektive Last deckt"
         unique_id: minutes_until_pv_covers_effective_load
         unit_of_measurement: "min"
@@ -142,7 +166,9 @@ template:
             {{ ((as_datetime(t) - now()).total_seconds() / 60) | round(0) }}
           {% endif %}
 
-      # 6) Last effektiv für Reserve (nur Anzeige)
+      # -------------------------
+      # 5) Last effektiv für Reserve (Anzeige): wenn Ø-Last nie deckbar => 1000W
+      # -------------------------
       - name: "Last effektiv für Reserve"
         unique_id: load_effective_for_reserve
         unit_of_measurement: "W"
@@ -151,29 +177,96 @@ template:
           {% set load_avg = states('sensor.last_fuer_berechnung_ø_min_1000w') | float(0) %}
           {{ 1000 if t_avg in ['unknown','unavailable','none','None',''] else (load_avg | round(0)) }}
 
-      # 7) Mindestreserve-SOC (%) -> Basis für die Rampe
+      # -------------------------
+      # 6) Debug Akku Energie verfügbar (kWh)
+      # -------------------------
+      - name: "Debug Akku Energie verfügbar"
+        unique_id: debug_batt_energy_kwh
+        unit_of_measurement: "kWh"
+        state: >
+          {{ states('sensor.emma_bewertete_ess_kapazitat') | float(0) | round(2) }}
+
+      # -------------------------
+      # 7) Debug Energiebedarf bis PV Deckung (AGGRESSIV, netto integriert, kWh)
+      # PV_used:
+      # - nächste 60 min: max(Live-PV, Forecast*Factor15m)
+      # - danach: Forecast*Factor15m
+      # -------------------------
+      - name: "Debug Energiebedarf bis PV Deckung (aggressiv)"
+        unique_id: debug_energy_need_kwh_aggressive
+        unit_of_measurement: "kWh"
+        state: >
+          {% set watts_map = state_attr('sensor.forecastsolar_raw_2', 'watts') %}
+          {% set t_eff = states('sensor.pv_zeitpunkt_deckt_effektive_last') %}
+          {% set load = states('sensor.last_effektiv_fuer_reserve') | float(1000) %}
+          {% set pv_live = states('sensor.emma_pv_ausgangsleistung') | float(0) %}
+          {% set k = states('sensor.pv_korrekturfaktor_15min') | float(1.0) %}
+          {% if watts_map is not mapping or t_eff in ['unknown','unavailable','none','None',''] or load <= 0 %}
+            {{ none }}
+          {% else %}
+            {% set end_dt = as_datetime(t_eff) | as_local %}
+            {% set ns = namespace(last_dt=None, wh=0) %}
+            {% for t,p in (watts_map | dictsort) %}
+              {% set dt = as_datetime(t) | as_local %}
+              {% if dt >= now() and dt <= end_dt %}
+                {% if ns.last_dt is not none %}
+                  {% set hours = (dt - ns.last_dt).total_seconds() / 3600 %}
+                  {% set pv_forecast = p | float(0) %}
+                  {% set pv_corr = pv_forecast * k %}
+                  {% set pv_used = ([pv_corr, pv_live] | max) if dt <= (now() + timedelta(hours=1)) else pv_corr %}
+                  {% set net = [load - pv_used, 0] | max %}
+                  {% set ns.wh = ns.wh + (net * hours) %}
+                {% endif %}
+                {% set ns.last_dt = dt %}
+              {% endif %}
+            {% endfor %}
+            {{ (ns.wh / 1000) | round(3) }}
+          {% endif %}
+
+      # -------------------------
+      # 8) Backup Reserve Mindestwert (AGGRESSIV DEFAULT) in %
+      # -------------------------
       - name: "Backup Reserve Mindestwert"
-        unique_id: backup_reserve_floor
+        unique_id: backup_reserve_floor_aggressive_default
         unit_of_measurement: "%"
         state: >
-          {% set minutes = states('sensor.minuten_bis_pv_effektive_last_deckt') | float(0) %}
+          {% set watts_map = state_attr('sensor.forecastsolar_raw_2', 'watts') %}
+          {% set t_eff = states('sensor.pv_zeitpunkt_deckt_effektive_last') %}
+          {% set load = states('sensor.last_effektiv_fuer_reserve') | float(1000) %}
+          {% set pv_live = states('sensor.emma_pv_ausgangsleistung') | float(0) %}
+          {% set k = states('sensor.pv_korrekturfaktor_15min') | float(1.0) %}
           {% set batt_kwh = states('sensor.emma_bewertete_ess_kapazitat') | float(0) %}
           {% set eff = 0.90 %}
 
-          {% set t_avg = states('sensor.pv_zeitpunkt_deckt_ø_last') %}
-          {% set load_avg = states('sensor.last_fuer_berechnung_ø_min_1000w') | float(0) %}
-          {% set load = 1000 if t_avg in ['unknown','unavailable','none','None',''] else load_avg %}
-
-          {% set batt_wh = batt_kwh * 1000 %}
-
-          {% if minutes <= 0 or load <= 0 or batt_wh <= 0 %}
-            0
+          {% if watts_map is not mapping or t_eff in ['unknown','unavailable','none','None',''] or batt_kwh <= 0 or load <= 0 %}
+            {{ none }}
           {% else %}
-            {% set needed_wh = (load * (minutes/60)) / eff %}
+            {% set end_dt = as_datetime(t_eff) | as_local %}
+            {% set batt_wh = batt_kwh * 1000 %}
+            {% set ns = namespace(last_dt=None, wh=0) %}
+
+            {% for t,p in (watts_map | dictsort) %}
+              {% set dt = as_datetime(t) | as_local %}
+              {% if dt >= now() and dt <= end_dt %}
+                {% if ns.last_dt is not none %}
+                  {% set hours = (dt - ns.last_dt).total_seconds() / 3600 %}
+                  {% set pv_forecast = p | float(0) %}
+                  {% set pv_corr = pv_forecast * k %}
+                  {% set pv_used = ([pv_corr, pv_live] | max) if dt <= (now() + timedelta(hours=1)) else pv_corr %}
+                  {% set net = [load - pv_used, 0] | max %}
+                  {% set ns.wh = ns.wh + (net * hours) %}
+                {% endif %}
+                {% set ns.last_dt = dt %}
+              {% endif %}
+            {% endfor %}
+
+            {% set needed_wh = ns.wh / eff %}
             {{ (needed_wh / batt_wh * 100) | round(1) }}
           {% endif %}
 
-      # 8) Zielreserve: Rampe (10%-Stufen AUFRUNDEN), max 80; FailSafe 80 wenn kein Zeitpunkt
+      # -------------------------
+      # 9) Backup Reserve Ziel: 10%-Steps AUFRUNDEN, max 80; FailSafe 80 wenn kein Zeitpunkt
+      # -------------------------
       - name: "Backup Reserve Ziel"
         unique_id: backup_reserve_target
         unit_of_measurement: "%"
@@ -187,7 +280,9 @@ template:
             {{ [stepped, 80] | min }}
           {% endif %}
 
-      # ---- Ampel ----
+      # -------------------------
+      # Ampel
+      # -------------------------
       - name: "Backup Ampel Status"
         unique_id: backup_ampel_status
         state: >
@@ -215,8 +310,8 @@ template:
           {% endif %}
 
 automation:
-  - id: pv_backup_reserve_setzen
-    alias: "PV: Backup-Reserve automatisch setzen (PeakCutoff, Rampe 80->0, Fail=80)"
+  - id: pv_backup_reserve_setzen_aggressiv_live_corrected
+    alias: "PV: Backup-Reserve automatisch setzen (Aggressiv + Live-Korrektur)"
     mode: single
     trigger:
       - platform: time_pattern
@@ -232,48 +327,3 @@ automation:
           entity_id: number.wechselrichter_backup_power_ladestand
         data:
           value: "{{ states('sensor.backup_reserve_ziel') | float(0) }}"
-
-# =========================
-# Mushroom Cards (Ampel + Details)
-# =========================
-#
-# 1) Ampel-Karte:
-# type: custom:mushroom-template-card
-# entity: sensor.backup_ampel_status
-# primary: Backup-Reserve
-# secondary: >
-#   Ziel: {{ states('sensor.backup_reserve_ziel') }}% ·
-#   Effektiv-Last: {{ states('sensor.last_effektiv_fuer_reserve') }} W ·
-#   PV deckt ab: {{ states('sensor.pv_zeitpunkt_deckt_effektive_last') }}
-# icon: >
-#   {% if states('sensor.backup_ampel_status') == 'ok' %}
-#     mdi:check-circle
-#   {% elif states('sensor.backup_ampel_status') == 'fallback_1000w' %}
-#     mdi:alert-circle
-#   {% else %}
-#     mdi:alert-octagon
-#   {% endif %}
-# icon_color: >
-#   {% if states('sensor.backup_ampel_status') == 'ok' %}
-#     green
-#   {% elif states('sensor.backup_ampel_status') == 'fallback_1000w' %}
-#     amber
-#   {% else %}
-#     red
-#   {% endif %}
-# layout: horizontal
-# fill_container: true
-# multiline_secondary: true
-#
-# 2) Detail-Karte (optional):
-# type: entities
-# entities:
-#   - sensor.pv_suchstart_nach_peak_morgen
-#   - sensor.last_fuer_berechnung_ø_min_1000w
-#   - sensor.pv_zeitpunkt_deckt_ø_last
-#   - sensor.pv_zeitpunkt_deckt_1000w
-#   - sensor.pv_zeitpunkt_deckt_effektive_last
-#   - sensor.minuten_bis_pv_effektive_last_deckt
-#   - sensor.backup_reserve_mindestwert
-#   - sensor.backup_reserve_ziel
-#   - number.wechselrichter_backup_power_ladestand
