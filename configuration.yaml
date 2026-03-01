@@ -1,15 +1,16 @@
 ###############################################################################
-# PV-Backup-Reserve (aggressiv, aber stabil)
-# - nutzt Forecast.Solar (REST) + Live-PV (EMMA) zur dynamischen Korrektur
-# - berechnet Zeit bis PV die (effektive) Last deckt + Energiebedarf bis dahin
-# - setzt daraus den Huawei Backup-Reserve-Sollwert (0..80%) in 10%-Schritten
+# PV Backup Reserve Control (aggressive, stable)
+# - Forecast.Solar (REST) + Live PV (EMMA) -> dynamic correction factor
+# - Finds next time PV (corrected) covers effective load (>= floor 1000W)
+# - Integrates net energy needed until that time: max(load - pv_corr, 0)
+# - Converts to required backup reserve (0..80%) in 10% steps
 #
-# WICHTIG: Prüfe/ersetze ggf. diese Entity IDs:
-#   - sensor.emma_pv_ausgangsleistung        (PV live in W)
-#   - sensor.emma_ladestrom                  (Hauslast/Leistungsaufnahme in W)
-#   - sensor.emma_batterieladung             (SOC in %)
-#   - sensor.emma_bewertete_ess_kapazitat    (Battery kWh, z.B. 13.8)
-#   - number.wechselrichter_backup_power_ladestand (Reserve-Sollwert in %)
+# REQUIRED ENTITIES (adjust if different):
+# - sensor.emma_pv_ausgangsleistung          (PV live W)
+# - sensor.emma_ladestrom                    (house load W)
+# - sensor.emma_batterieladung               (SOC %)
+# - sensor.emma_bewertete_ess_kapazitat      (battery capacity kWh, e.g. 13.8)
+# - number.wechselrichter_backup_power_ladestand (backup reserve setpoint %)
 ###############################################################################
 
 rest:
@@ -17,26 +18,26 @@ rest:
     method: GET
     scan_interval: 1800  # 30 min
     sensor:
-      - name: "ForecastSolar Raw 2"
-        unique_id: forecastsolar_raw_2
+      - name: "pv_forecastsolar_raw_2"
+        unique_id: pv_forecastsolar_raw_2
         value_template: "ok"
         json_attributes_path: "$.result"
         json_attributes:
           - watts
 
 sensor:
-  # 30-Minuten-Durchschnitt der Last (EMMA Ladestrom)
+  # 30-min average load from EMMA (statistics)
   - platform: statistics
-    name: "EMMA Last 30min Durchschnitt"
+    name: "pv_emma_load_30m_avg"
     entity_id: sensor.emma_ladestrom
     state_characteristic: mean
     max_age:
       minutes: 30
 
-  # Glättung des Korrekturfaktors (30 Min)
+  # smoothing of correction factor (30 min)
   - platform: statistics
-    name: "PV Forecast Korrekturfaktor (30m Ø)"
-    entity_id: sensor.pv_forecast_korrekturfaktor_raw
+    name: "pv_forecast_corr_factor_30m_avg"
+    entity_id: sensor.pv_forecast_corr_factor_raw
     state_characteristic: mean
     max_age:
       minutes: 30
@@ -44,37 +45,37 @@ sensor:
 template:
   - sensor:
       #########################################################################
-      # 1) Basiswerte: Last, PV live, effektive Last (Floor 1000W)
+      # 1) Base values
       #########################################################################
-      - name: "PV Live"
+      - name: "pv_live_w"
         unique_id: pv_live_w
         unit_of_measurement: "W"
         device_class: power
-        state: "{{ states('sensor.emma_pv_ausgangsleistung') | float(0) }}"
+        state: "{{ states('sensor.emma_pv_ausgangsleistung') | float(0) | round(0) }}"
 
-      - name: "Last für Berechnung (Ø, min 30)"
-        unique_id: load_for_calc_w
+      - name: "pv_load_for_calc_w"
+        unique_id: pv_load_for_calc_w
         unit_of_measurement: "W"
         device_class: power
-        state: "{{ states('sensor.emma_last_30min_durchschnitt') | float(0) }}"
+        state: "{{ states('sensor.pv_emma_load_30m_avg') | float(0) | round(0) }}"
 
-      - name: "Last effektiv für Reserve (min 1000W)"
-        unique_id: effective_load_w
+      - name: "pv_effective_load_w"
+        unique_id: pv_effective_load_w
         unit_of_measurement: "W"
         device_class: power
         state: >
-          {% set l = states('sensor.emma_last_30min_durchschnitt') | float(0) %}
+          {% set l = states('sensor.pv_emma_load_30m_avg') | float(0) %}
           {{ [l, 1000] | max | round(0) }}
 
       #########################################################################
-      # 2) Forecast "jetzt" (nächster Forecast-Punkt) + Korrekturfaktor (live)
+      # 2) Forecast "now" (next forecast point >= now)
       #########################################################################
-      - name: "PV Forecast jetzt"
+      - name: "pv_forecast_now_w"
         unique_id: pv_forecast_now_w
         unit_of_measurement: "W"
         device_class: power
         state: >
-          {% set watts = state_attr('sensor.forecastsolar_raw_2','watts') %}
+          {% set watts = state_attr('sensor.pv_forecastsolar_raw_2','watts') %}
           {% if watts is mapping %}
             {% set n = namespace(val=0) %}
             {% for t,p in (watts | dictsort) %}
@@ -88,37 +89,36 @@ template:
             0
           {% endif %}
 
-      - name: "PV Forecast Korrekturfaktor (raw)"
-        unique_id: pv_forecast_korrekturfaktor_raw
+      #########################################################################
+      # 3) Dynamic correction factor (live / forecast_now), clamped and smoothed
+      #########################################################################
+      - name: "pv_forecast_corr_factor_raw"
+        unique_id: pv_forecast_corr_factor_raw
         state: >
-          {# Faktor = PV_live / PV_forecast_jetzt, aber nur wenn Forecast sinnvoll > 50W #}
-          {% set pv_live = states('sensor.pv_live') | float(0) %}
-          {% set pv_fc   = states('sensor.pv_forecast_jetzt') | float(0) %}
+          {% set pv_live = states('sensor.pv_live_w') | float(0) %}
+          {% set pv_fc   = states('sensor.pv_forecast_now_w') | float(0) %}
           {% if pv_fc > 50 and pv_live > 0 %}
             {% set f = pv_live / pv_fc %}
-            {# clamp 0.5..1.5 #}
             {{ [ [f, 0.5] | max, 1.5 ] | min }}
           {% else %}
             1.0
           {% endif %}
 
-      - name: "PV Forecast Korrekturfaktor"
-        unique_id: pv_forecast_korrekturfaktor
+      - name: "pv_forecast_corr_factor"
+        unique_id: pv_forecast_corr_factor
         state: >
-          {# geglätteter Faktor; Fallback 1.0 #}
-          {{ states('sensor.pv_forecast_korrekturfaktor_30m_o') | float(1.0) | round(2) }}
+          {{ states('sensor.pv_forecast_corr_factor_30m_avg') | float(1.0) | round(2) }}
 
       #########################################################################
-      # 3) PV Deckungspunkt (Power): erster Zeitpunkt > jetzt, wo PV_corr >= Last_eff
-      #    (Vergangenheit wird ignoriert)
+      # 4) First future time where corrected PV >= effective load
       #########################################################################
-      - name: "PV Zeitpunkt deckt effektive Last"
+      - name: "pv_time_covers_effective_load"
         unique_id: pv_time_covers_effective_load
         device_class: timestamp
         state: >
-          {% set watts = state_attr('sensor.forecastsolar_raw_2','watts') %}
-          {% set load  = states('sensor.last_effektiv_fuer_reserve_min_1000w') | float(0) %}
-          {% set f     = states('sensor.pv_forecast_korrekturfaktor') | float(1.0) %}
+          {% set watts = state_attr('sensor.pv_forecastsolar_raw_2','watts') %}
+          {% set load  = states('sensor.pv_effective_load_w') | float(0) %}
+          {% set f     = states('sensor.pv_forecast_corr_factor') | float(1.0) %}
           {% if watts is mapping and load > 0 %}
             {% set ns = namespace(found=None) %}
             {% for t,p in (watts | dictsort) %}
@@ -135,11 +135,11 @@ template:
             {{ none }}
           {% endif %}
 
-      - name: "Minuten bis PV effektive Last deckt"
-        unique_id: minutes_until_pv_covers_effective
+      - name: "pv_minutes_until_cover"
+        unique_id: pv_minutes_until_cover
         unit_of_measurement: "min"
         state: >
-          {% set t = states('sensor.pv_zeitpunkt_deckt_effektive_last') %}
+          {% set t = states('sensor.pv_time_covers_effective_load') %}
           {% if t not in ['unknown','unavailable','none',''] %}
             {% set mins = ((as_timestamp(t) - as_timestamp(now())) / 60) %}
             {{ (mins if mins > 0 else 0) | round(0) }}
@@ -148,45 +148,43 @@ template:
           {% endif %}
 
       #########################################################################
-      # 4) Energiebedarf bis Deckung (aggressiv):
-      #    Integration von max(Last_eff - PV_corr, 0) von jetzt bis zum Deckungszeitpunkt
-      #    -> berücksichtigt, dass PV schon VOR voller Übernahme hilft.
+      # 5) Aggressive energy need until cover:
+      #    integrate max(load - pv_corr, 0) from now -> cover time
       #########################################################################
-      - name: "Debug Energiebedarf bis PV Deckung"
-        unique_id: debug_energy_need_kwh
+      - name: "pv_debug_energy_need_kwh"
+        unique_id: pv_debug_energy_need_kwh
         unit_of_measurement: "kWh"
         device_class: energy
         state: >
-          {% set watts = state_attr('sensor.forecastsolar_raw_2','watts') %}
-          {% set tcover = states('sensor.pv_zeitpunkt_deckt_effektive_last') %}
-          {% set load   = states('sensor.last_effektiv_fuer_reserve_min_1000w') | float(0) %}
-          {% set f      = states('sensor.pv_forecast_korrekturfaktor') | float(1.0) %}
+          {% set watts  = state_attr('sensor.pv_forecastsolar_raw_2','watts') %}
+          {% set tcover = states('sensor.pv_time_covers_effective_load') %}
+          {% set load   = states('sensor.pv_effective_load_w') | float(0) %}
+          {% set f      = states('sensor.pv_forecast_corr_factor') | float(1.0) %}
           {% if watts is mapping and load > 0 and tcover not in ['unknown','unavailable','none',''] %}
             {% set cover_ts = as_timestamp(tcover) %}
             {% set now_ts   = as_timestamp(now()) %}
             {% if cover_ts <= now_ts %}
               0
             {% else %}
-              {# finde "prev_p" = letzter Forecast-Wert <= now() #}
               {% set ns = namespace(prev_p=0, prev_t=now_ts, wh=0) %}
+              {# last forecast value <= now #}
               {% for t,p in (watts | dictsort) %}
                 {% set ts = as_timestamp(t) %}
                 {% if ts <= now_ts %}
                   {% set ns.prev_p = p | float(0) %}
                 {% endif %}
               {% endfor %}
-
-              {# integriere über Segmente bis cover_ts #}
+              {# integrate segments #}
               {% for t,p in (watts | dictsort) %}
                 {% set ts = as_timestamp(t) %}
                 {% if ts > now_ts %}
                   {% set seg_end = (ts if ts < cover_ts else cover_ts) %}
                   {% if seg_end > ns.prev_t %}
-                    {% set dt_h = (seg_end - ns.prev_t) / 3600 %}
+                    {% set dt_h   = (seg_end - ns.prev_t) / 3600 %}
                     {% set pv_corr = (ns.prev_p * f) %}
-                    {% set net_w = (load - pv_corr) %}
+                    {% set net_w  = (load - pv_corr) %}
                     {% if net_w < 0 %}{% set net_w = 0 %}{% endif %}
-                    {% set ns.wh = ns.wh + (net_w * dt_h) %}
+                    {% set ns.wh  = ns.wh + (net_w * dt_h) %}
                     {% set ns.prev_t = seg_end %}
                     {% set ns.prev_p = p | float(0) %}
                   {% endif %}
@@ -196,14 +194,14 @@ template:
               {{ (ns.wh / 1000) | round(3) }}
             {% endif %}
           {% else %}
-            {{ 0 }}
+            0
           {% endif %}
 
       #########################################################################
-      # 5) Verfügbare Akku-Energie (aus ESS kWh & SOC)
+      # 6) Battery available energy (debug)
       #########################################################################
-      - name: "Debug Akku Energie verfügbar"
-        unique_id: debug_batt_energy_kwh
+      - name: "pv_debug_batt_energy_kwh"
+        unique_id: pv_debug_batt_energy_kwh
         unit_of_measurement: "kWh"
         device_class: energy
         state: >
@@ -212,20 +210,17 @@ template:
           {{ (cap * soc / 100) | round(2) }}
 
       #########################################################################
-      # 6) Backup Reserve Mindestwert (%) -> 0..80, danach in 10%-Schritten rauf
-      #    - eff = 0.90 berücksichtigt Verluste/Unschärfe
-      #    - wenn kein Deckungszeitpunkt gefunden wird -> Fail-Safe = 80%
+      # 7) Required backup reserve (0..80) + target in 10% steps, fail-safe 80
       #########################################################################
-      - name: "Backup Reserve Mindestwert"
-        unique_id: backup_reserve_mindestwert
+      - name: "pv_backup_reserve_min_pct"
+        unique_id: pv_backup_reserve_min_pct
         unit_of_measurement: "%"
         state: >
           {% set cap_kwh = states('sensor.emma_bewertete_ess_kapazitat') | float(0) %}
-          {% set need_kwh = states('sensor.debug_energiebedarf_bis_pv_deckung') | float(0) %}
+          {% set need_kwh = states('sensor.pv_debug_energy_need_kwh') | float(0) %}
           {% set eff = 0.90 %}
           {% if cap_kwh > 0 %}
             {% set pct = (need_kwh / eff) / cap_kwh * 100 %}
-            {# clamp 0..80 #}
             {% if pct < 0 %}{% set pct = 0 %}{% endif %}
             {% if pct > 80 %}{% set pct = 80 %}{% endif %}
             {{ pct | round(1) }}
@@ -233,32 +228,31 @@ template:
             80
           {% endif %}
 
-      - name: "Backup Reserve Ziel"
-        unique_id: backup_reserve_ziel
+      - name: "pv_backup_reserve_target_pct"
+        unique_id: pv_backup_reserve_target_pct
         unit_of_measurement: "%"
         state: >
-          {% set tcover = states('sensor.pv_zeitpunkt_deckt_effektive_last') %}
-          {% set minpct = states('sensor.backup_reserve_mindestwert') | float(80) %}
+          {% set tcover = states('sensor.pv_time_covers_effective_load') %}
+          {% set minpct = states('sensor.pv_backup_reserve_min_pct') | float(80) %}
           {% if tcover in ['unknown','unavailable','none',''] %}
             80
           {% else %}
-            {# in 10%-Schritten AUFRUNDEN #}
             {% set step = 10 %}
-            {% set q = ( (minpct / step) | round(0, 'ceil') ) * step %}
+            {% set q = ((minpct / step) | round(0, 'ceil')) * step %}
             {% if q < 0 %}{% set q = 0 %}{% endif %}
             {% if q > 80 %}{% set q = 80 %}{% endif %}
             {{ q | int }}
           {% endif %}
 
       #########################################################################
-      # 7) Ampel/Status (optional fürs Dashboard)
+      # 8) Simple dashboard status
       #########################################################################
-      - name: "Backup Ampel Status"
-        unique_id: backup_ampel_status
+      - name: "pv_backup_status"
+        unique_id: pv_backup_status
         state: >
-          {% set tcover = states('sensor.pv_zeitpunkt_deckt_effektive_last') %}
+          {% set tcover = states('sensor.pv_time_covers_effective_load') %}
           {% set soc = states('sensor.emma_batterieladung') | float(0) %}
-          {% set target = states('sensor.backup_reserve_ziel') | float(80) %}
+          {% set target = states('sensor.pv_backup_reserve_target_pct') | float(80) %}
           {% if tcover in ['unknown','unavailable','none',''] %}
             fail_safe_80
           {% elif target <= 0 %}
@@ -269,35 +263,32 @@ template:
             ok
           {% endif %}
 
-      - name: "Backup Ampel Farbe"
-        unique_id: backup_ampel_farbe
+      - name: "pv_backup_color"
+        unique_id: pv_backup_color
         state: >
-          {% set s = states('sensor.backup_ampel_status') %}
+          {% set s = states('sensor.pv_backup_status') %}
           {% if s == 'ok' %}green
           {% elif s == 'free_to_zero' %}amber
           {% else %}red
           {% endif %}
 
 automation:
-  - id: set_backup_reserve_from_template
-    alias: "Backup Reserve automatisch setzen (0..80, 10%-Steps)"
+  - id: pv_set_backup_reserve
+    alias: "PV Backup Reserve automatisch setzen (0..80, 10%-Steps)"
     mode: single
     trigger:
       - platform: time_pattern
         minutes: "/5"
       - platform: state
         entity_id:
-          - sensor.backup_reserve_ziel
+          - sensor.pv_backup_reserve_target_pct
     condition:
-      # Nur setzen, wenn Ziel ein sauberer Wert ist
       - condition: template
-        value_template: >
-          {{ states('sensor.backup_reserve_ziel') not in ['unknown','unavailable','none',''] }}
+        value_template: "{{ states('sensor.pv_backup_reserve_target_pct') not in ['unknown','unavailable','none',''] }}"
     action:
       - variables:
-          target: "{{ states('sensor.backup_reserve_ziel') | float(80) }}"
+          target: "{{ states('sensor.pv_backup_reserve_target_pct') | float(80) }}"
           current: "{{ states('number.wechselrichter_backup_power_ladestand') | float(0) }}"
-      # Nur schreiben, wenn Abweichung >= 1% (verhindert Spam)
       - condition: template
         value_template: "{{ (target - current) | abs >= 1 }}"
       - service: number.set_value
