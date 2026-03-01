@@ -2,176 +2,236 @@
 
 ## Overview
 
-This project implements a fully dynamic backup reserve control for a Huawei ESS system using Home Assistant and Forecast.Solar.
+This project implements a dynamic backup reserve control for a Huawei ESS system (e.g. MAP0 + SmartGuard + EMMA) using Home Assistant and Forecast.Solar.
 
 Instead of keeping a fixed backup SOC (e.g. 30%), the system continuously calculates the minimum required battery reserve based on:
 
-- Current average house consumption (30-minute mean)
-- Forecasted PV production (Forecast.Solar API)
-- Effective usable battery capacity
-- System efficiency
-- Daily peak cutoff logic
+- Current 30-minute average house load  
+- Forecasted PV production (Forecast.Solar API)  
+- Effective usable battery capacity  
+- Configured system efficiency  
+- Daily peak cutoff logic  
+- Time until next relevant PV production  
 
-The goal is simple:
-
-Keep as little backup reserve as necessary — but never too little.
-
-The system automatically adjusts the inverter’s backup reserve (`number.wechselrichter_backup_power_ladestand`) every few minutes.
+The inverter backup reserve (`number.wechselrichter_backup_power_ladestand`) is updated automatically in 10% steps.
 
 ---
 
-## Why This Is Different
+## Current System Behavior
 
-Typical setups use a fixed backup reserve:
+The system differentiates between:
 
-- 20%
-- 30%
-- 40%
+- **Dynamic Target Reserve** (calculated)
+- **Minimum Backup Hold** (hard safety floor)
 
-This is inefficient because:
+Example:
 
-- On sunny days it wastes usable capacity.
-- On cloudy days it may not be sufficient.
-- It does not adapt to load or forecast conditions.
+- Calculated target reserve: 70%
+- Hard minimum backup reserve: 80%
+- Active state: `hold_80`
 
-This project replaces fixed values with a predictive, load-aware, forecast-aware control logic.
+The hard minimum always has priority.
+
+This prevents deep discharge during uncertain forecast conditions or long energy deficits.
 
 ---
 
 ## Core Idea
 
-The system calculates:
+The system calculates how much battery energy is required to survive until PV production can take over the load again.
 
-How much battery capacity is required to survive until PV production can take over the load again.
+If the calculated reserve is below the configured minimum hold, the system keeps the minimum.
 
-It then sets the backup reserve accordingly — in 10% steps — with a maximum cap of 80%.
+If above, the reserve increases in 10% steps (maximum 80%).
 
 ---
 
 ## Logic Flow
 
-### 1. Determine Relevant Load
+### 1. Determine Effective Load
 
-- Uses 30-minute mean house load (`sensor.emma_ladestrom`)
-- Minimum enforced load = 1000 W  
-  (because in blackout mode heavy consumers are shed)
+Uses:
 
-Effective Load = max(30min_avg_load, 1000W)
+`sensor.emma_ladestrom` (30-minute mean)
+
+Minimum enforced load = 1000 W  
+(assumed blackout load after load shedding)
+
+Effective Load:
+
+```
+Effective_Load = max(30min_avg_load, 1000W)
+```
 
 ---
 
-### 2. Peak Cutoff Rule
+### 2. Peak Cutoff Logic
 
-After the daily peak production time has passed (`sensor.power_highest_peak_time_today_2`):
+After the daily peak production time:
 
-The system ignores the remaining hours of today  
-and only evaluates starting from tomorrow 00:00.
+`sensor.power_highest_peak_time_today_2`
+
+The system ignores remaining hours of today and evaluates starting from tomorrow 00:00.
 
 This prevents late-afternoon false discharge decisions.
 
 ---
 
-### 3. Find PV Takeover Time
+### 3. Determine PV Takeover Time
 
-Using Forecast.Solar hourly production data:
+Using Forecast.Solar hourly forecast:
 
-1. Try to find first future time where:
+The system searches the first future hour where:
 
-   PV >= Average Load
+```
+PV >= Effective_Load
+```
 
-2. If not possible, fallback to:
+Fallback condition:
 
-   PV >= 1000W
+```
+PV >= 1000W
+```
 
-3. If neither is found → FailSafe mode.
+If neither condition is met:
+
+→ FailSafe Mode
 
 ---
 
-### 4. Calculate Required Energy
+### 4. Energy Deficit Calculation
 
 Energy required until takeover:
 
-Energy = Load × Time_until_takeover / Efficiency
+```
+Energy_Deficit = Load × Time_until_takeover / Efficiency
+```
 
-Battery percentage required:
+Displayed via:
 
-Required_SOC = Energy / Battery_Capacity × 100
+`sensor.pv_debug_energy_need_kwh`
 
-Efficiency factor default = 90%
+Available battery energy:
+
+`sensor.pv_debug_batt_energy_kwh`
+
+If:
+
+```
+Energy_Deficit > Available_Energy
+```
+
+The system enters hold/red state.
+
+Default efficiency = 90%
 
 ---
 
 ### 5. Reserve Ramp Behavior
 
-The system does NOT jump directly to 10%.
+Reserve is rounded UP in 10% steps.
 
-Instead:
+Limits:
 
-- Reserve is rounded up in 10% steps
 - Maximum reserve = 80%
-- When PV takeover is reached → reserve becomes 0%
+- Minimum reserve = configurable
+- Hard hold reserve = configurable (e.g. 80%)
 
-This creates a natural ramp:
+Example ramp:
 
-80% → 70% → 60% → 50% → ... → 0%
+```
+80% → 70% → 60% → 50% → … → 0%
+```
 
-Discharge begins as late as possible, but still guarantees survival until PV resumes.
+When PV takeover is reached:
+
+```
+Reserve = 0%
+```
+
+---
+
+## Modes
+
+### tomorrow_morning
+
+System evaluates survival until next PV morning window.
+
+Used when:
+
+- No relevant PV expected today
+- After peak cutoff
+- Night operation
+
+---
+
+## Status Sensor (Ampel)
+
+The system exposes a status sensor:
+
+| Status           | Meaning |
+|------------------|----------|
+| ok               | Load can be covered until PV takeover |
+| fallback_1000w   | Only 1000W blackout load assumption |
+| hold_80          | Hard reserve floor active |
+| fail_safe_80     | No sufficient PV forecast available |
+| red              | Energy deficit exceeds battery |
+
+Designed for dashboard visualization.
+
+---
+
+## Debug Sensors
+
+The system exposes:
+
+- Minutes until PV takeover (`sensor.pv_minutes_until_cover`)
+- PV takeover time (`sensor.pv_time_covers_effective_load`)
+- Energy deficit (`sensor.pv_debug_energy_need_kwh`)
+- Available battery energy (`sensor.pv_debug_batt_energy_kwh`)
+- Dynamic reserve target
+- Active reserve
+- Forecast status
+
+These allow full transparency of decision logic.
 
 ---
 
 ## FailSafe Mode
 
-If no future PV production can cover even 1000W:
+If no forecast hour satisfies:
 
+```
+PV >= 1000W
+```
+
+Then:
+
+```
 Backup Reserve = 80%
+```
 
-This protects against multi-day cloudy periods.
+Used for:
 
----
-
-## Ampel Status (Traffic Light Indicator)
-
-The system exposes a status sensor:
-
-| Status              | Meaning                                  |
-|---------------------|------------------------------------------|
-| ok                  | Average load can be covered              |
-| fallback_1000w      | Only 1000W backup load possible          |
-| fail_safe_80        | No sufficient PV forecast available      |
-
-This can be visualized using Mushroom Cards.
+- Multi-day cloudy periods
+- Forecast API failure
+- Severe winter scenarios
 
 ---
 
 ## Features
 
-- Dynamic reserve calculation
-- Load-aware logic
-- Forecast-based prediction
-- Peak cutoff protection
-- Blackout-mode optimization
-- 10% step smoothing
-- 80% maximum cap
-- Automatic inverter update
-- Dashboard-ready status sensors
-
----
-
-## File Structure
-
-Main configuration file:
-
-configuration.yaml
-
-All logic is implemented directly inside the Home Assistant configuration.
-
----
-
-## Configuration File
-
-Full configuration example:
-
-See: configuration.yaml
+- Dynamic reserve calculation  
+- Forecast-aware logic  
+- Load-aware modeling  
+- Daily peak cutoff protection  
+- Hard minimum reserve floor  
+- Energy deficit modeling  
+- 10% smoothing ramp  
+- 80% maximum cap  
+- Automatic inverter update  
+- Transparent debug sensors  
+- Dashboard-ready status output  
 
 ---
 
@@ -180,36 +240,44 @@ See: configuration.yaml
 - Home Assistant
 - Forecast.Solar API
 - Huawei inverter with modbus integration
+- SmartGuard
 - EMMA load sensor
 - Battery capacity sensor
+- Modbus integration
 - Optional: Mushroom Cards
 
 ---
 
-## Disclaimer
+## Important Safety Notice
 
-This project directly controls inverter backup reserve settings.
+This system directly modifies inverter backup reserve values.
 
-Use at your own risk.
+Before using:
 
-Ensure:
+- Verify correct battery capacity
+- Validate efficiency factor
+- Ensure blackout load shedding works
+- Test fail-safe behavior
 
-- Correct battery capacity configuration
-- Correct efficiency assumptions
-- Reliable load shedding in blackout mode
+Incorrect configuration may result in:
+
+- Unexpected discharge
+- Early grid fallback
+- Reduced backup autonomy
 
 ---
 
 ## Philosophy
 
-This is not just a script.
+This is not just a YAML script.
 
-It is a small energy management system that tries to:
+It is a predictive micro energy management system that aims to:
 
 - Maximize self-consumption
 - Minimize unnecessary reserve
 - Maintain blackout readiness
-- Adapt daily to weather conditions
+- React dynamically to weather and load
+- Provide full transparency of decisions
 
 ---
 
