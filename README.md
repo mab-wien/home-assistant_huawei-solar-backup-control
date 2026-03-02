@@ -196,6 +196,26 @@ The system exposes:
 
 These allow full transparency of decision logic.
 
+
+### PV-only Nachladen (ohne Netzladen)
+
+Damit der Wechselrichter den Akku **bei PV-Überschuss** wieder aktiv bis zum Reserve-Setpoint anheben darf, aber **niemals aus dem Netz** lädt, wird zusätzlich die Netz-Wirkleistung ausgewertet:
+
+- `ent_grid_power_w` (bei dir: `sensor.emma_leistung_2`)
+  - **+W = Netzbezug (Import)**
+  - **−W = Einspeisung (Export)**
+
+Uplift (Reserve darf über aktuellen SOC steigen) ist nur erlaubt, wenn:
+
+- Netzbezug ≤ `cfg_grid_import_margin_w` (Default: 100 W)
+- PV-Überschuss (PV Live − effektive Last) ≥ `cfg_pv_surplus_margin_w` (Default: 500 W)
+
+Neue Debug-Sensoren dafür:
+
+- `sensor.debug_grid_import_w`
+- `sensor.debug_pv_uberschuss_pv_last_eff`
+- `sensor.debug_pv_only_uplift_erlaubt`
+
 ---
 
 ## FailSafe Mode
