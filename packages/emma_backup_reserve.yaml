@@ -117,9 +117,20 @@ template:
         unique_id: emma_backup_effective_load
         unit_of_measurement: "W"
         device_class: power
+        # Optional (für Statistiken/Graphen):
+        # state_class: measurement
         state: >
-          {% set l = states('sensor.last_fur_berechnung_o_30min') | float(0) %}
-          {{ [l, cfg_floor_load_w | int(1000)] | max | round(0) }}
+          {% set avg_state = states(ent_load_avg30_w) %}
+          {% set avg = avg_state | float(0) %}
+          {% set inst = states(ent_load_inst_w) | float(0) %}
+
+          {% if avg_state not in ['unknown','unavailable','none',''] %}
+            {% set l = [avg, 0] | max %}
+          {% else %}
+            {% set l = [inst, 0] | max %}
+          {% endif %}
+
+          {{ ([l, cfg_floor_load_w | float(1000)] | max) | round(0) }}
 
       ############################################################
       # PV Forecast "jetzt" (robust: nearest past OR next future)
@@ -238,8 +249,11 @@ template:
           {% set k = states('sensor.pv_forecast_korrekturfaktor') | float(1.0) %}
 
           {# tomorrow morning #}
-          {% set tm = (now() + timedelta(days=1)).replace(hour=cfg_tomorrow_hour|int(7), minute=0, second=0, microsecond=0) %}
-          {% set tm_ts = as_timestamp(tm) %}
+          {% set tm = (now() + timedelta(days=1)).replace(
+              hour=cfg_tomorrow_hour|int(7), minute=0, second=0, microsecond=0
+            )
+          %}
+          {% set tm_ts = as_timestamp(tm, default=now_ts + 3600) %}
           {% if tm_ts <= now_ts %}
             {% set tm_ts = now_ts + 3600 %}
           {% endif %}
@@ -247,33 +261,33 @@ template:
           {# fail-safe time #}
           {% set fs_ts = now_ts + (cfg_fail_safe_hours|int(6)) * 3600 %}
 
-          {% set cover_ts = 0 %}
-          {% set peak_ts = 0 %}
-          {% set peak_w = -1 %}
+          {% set ns = namespace(cover_ts=0, peak_ts=0, peak_w=-1) %}
 
           {% if watts is mapping and watts | count > 0 %}
             {% for t,p in (watts | dictsort) %}
               {% set ts = as_timestamp(t, default=0) %}
               {% if ts > now_ts and ts <= eod_ts %}
                 {% set pv = (p | float(0)) * k %}
-                {% if pv > peak_w %}
-                  {% set peak_w = pv %}
-                  {% set peak_ts = ts %}
+
+                {% if pv > ns.peak_w %}
+                  {% set ns.peak_w = pv %}
+                  {% set ns.peak_ts = ts %}
                 {% endif %}
-                {% if cover_ts == 0 and pv >= load %}
-                  {% set cover_ts = ts %}
+
+                {% if ns.cover_ts == 0 and pv >= load %}
+                  {% set ns.cover_ts = ts %}
                 {% endif %}
               {% endif %}
             {% endfor %}
 
-            {% if cover_ts > 0 %}
-              {{ cover_ts | timestamp_local(default=now().isoformat()) }}
+            {% if ns.cover_ts > 0 %}
+              {{ ns.cover_ts | timestamp_local(default=now().isoformat()) }}
             {% else %}
               {% if cfg_fallback_order == 'tomorrow_then_peak' %}
                 {{ tm_ts | timestamp_local(default=now().isoformat()) }}
               {% else %}
-                {% if peak_ts > 0 %}
-                  {{ peak_ts | timestamp_local(default=now().isoformat()) }}
+                {% if ns.peak_ts > 0 %}
+                  {{ ns.peak_ts | timestamp_local(default=now().isoformat()) }}
                 {% else %}
                   {{ tm_ts | timestamp_local(default=now().isoformat()) }}
                 {% endif %}
