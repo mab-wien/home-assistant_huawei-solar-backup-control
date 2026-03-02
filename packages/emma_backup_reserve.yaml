@@ -74,6 +74,10 @@ template:
       ent_reserve_setpoint_pct: "number.wechselrichter_backup_power_ladestand"
       ent_grid_power_w: "sensor.emma_leistung_2"  # Netz-Wirkleistung (+Import / -Export)
 
+      # PV-only uplift (Akkunachladung nur bei PV-Überschuss, niemals aus dem Netz):
+      cfg_grid_import_margin_w: 100   # W  (Import-Toleranz gegen Rauschen)
+      cfg_pv_surplus_margin_w: 500    # W  (PV muss Last um diesen Wert übertreffen)
+
       # Calculation constants:
       cfg_floor_load_w: 1000          # blackout minimum load assumption
       cfg_eff_discharge: 0.90         # battery->load efficiency
