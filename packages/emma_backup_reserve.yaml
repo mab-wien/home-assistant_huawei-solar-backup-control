@@ -555,7 +555,7 @@ template:
         device_class: power
         state_class: measurement
         state: >
-          # { + = Import (Netzbezug), - = Export (Einspeisung) }
+          {# + = Import (Netzbezug), - = Export (Einspeisung) #}
           {{ states(ent_grid_power_w) | float(0) | round(0) }}
 
       - name: "Debug PV Überschuss (PV - Last eff.)"
