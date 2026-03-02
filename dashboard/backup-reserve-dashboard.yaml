@@ -1,0 +1,250 @@
+views:
+  - title: Backup-Reserve Monitor
+    sections:
+      - type: grid
+        cards:
+          - type: vertical-stack
+            cards:
+              - type: vertical-stack
+                cards:
+                  - type: horizontal-stack
+                    cards:
+                      - type: custom:mushroom-template-card
+                        primary: PV-Backup Ampel
+                        secondary: >
+                          {{ states('sensor.backup_ampel_status') }} · {{
+                          states('sensor.pv_zielmodus') }} · {{
+                          states('sensor.minuten_bis_pv_effektive_last_deckt')
+                          }} min
+                        icon: mdi:traffic-light
+                        icon_color: >
+                          {% set c = states('sensor.backup_ampel_farbe') %} {%
+                          if c == 'green' %} green {% elif c in
+                          ['amber','yellow'] %} amber {% elif c == 'red' %} red
+                          {% else %} grey {% endif %}
+                        tap_action:
+                          action: more-info
+                          entity: sensor.backup_ampel_status
+                      - type: custom:mushroom-template-card
+                        primary: Reserve
+                        secondary: >
+                          Ziel {{ states('sensor.backup_reserve_ziel') }}% · Min
+                          {{ states('sensor.backup_reserve_mindestwert') }}% ·
+                          Ist {{
+                          states('number.wechselrichter_backup_power_ladestand')
+                          }}% · Δ {{
+                            (states('sensor.backup_reserve_ziel')|float(0)
+                            - states('number.wechselrichter_backup_power_ladestand')|float(0)) | round(0)
+                          }}%
+                        icon: mdi:battery-sync-outline
+                        icon_color: >
+                          {% set d =
+                            (states('sensor.backup_reserve_ziel')|float(0)
+                            - states('number.wechselrichter_backup_power_ladestand')|float(0)) %}
+                          {% if d|abs >= 10 %} amber {% elif d|abs >= 3 %}
+                          yellow {% else %} green {% endif %}
+                        tap_action:
+                          action: more-info
+                          entity: sensor.backup_reserve_ziel
+                  - type: horizontal-stack
+                    cards:
+                      - type: custom:mushroom-template-card
+                        primary: PV / Forecast
+                        secondary: >
+                          PV {{ states('sensor.pv_live') }} W · FCcorr {{
+                          states('sensor.pv_forecast_korrigiert') }} W · K {{
+                          states('sensor.pv_forecast_korrekturfaktor') }}
+                        icon: mdi:solar-power-variant-outline
+                        icon_color: >
+                          {% set pv = states('sensor.pv_live')|float(0) %} {%
+                          set fc =
+                          states('sensor.pv_forecast_korrigiert')|float(0) %} {%
+                          if pv >= fc %} green {% elif pv >= fc*0.8 %} amber {%
+                          else %} red {% endif %}
+                        tap_action:
+                          action: more-info
+                          entity: sensor.pv_live
+                      - type: custom:mushroom-template-card
+                        primary: Last
+                        secondary: >
+                          Last eff. {{
+                          states('sensor.last_effektiv_fur_reserve_floor_1000w')
+                          }} W · Ø30 {{
+                          states('sensor.last_fur_berechnung_30min') }} W
+                        icon: mdi:flash-outline
+                        icon_color: >
+                          {% set l =
+                          states('sensor.last_effektiv_fur_reserve_floor_1000w')|float(0)
+                          %} {% if l < 1500 %} green {% elif l < 3500 %} amber
+                          {% else %} red {% endif %}
+                        tap_action:
+                          action: more-info
+                          entity: sensor.last_effektiv_fur_reserve_floor_1000w
+                  - type: horizontal-stack
+                    cards:
+                      - type: custom:mushroom-template-card
+                        primary: Energie bis PV deckt
+                        secondary: >
+                          Defizit {{
+                          states('sensor.debug_energiedefizit_bis_pv_deckung')
+                          }} kWh · Akku {{
+                          states('sensor.debug_akku_energie_verfuegbar') }} kWh
+                          · Ratio {{
+                            (
+                              states('sensor.debug_energiedefizit_bis_pv_deckung')|float(0)
+                              /
+                              (states('sensor.debug_akku_energie_verfuegbar')|float(0) + 0.0001)
+                            ) | round(2)
+                          }}
+                        icon: mdi:chart-areaspline
+                        icon_color: >
+                          {% set ratio =
+                            (
+                              states('sensor.debug_energiedefizit_bis_pv_deckung')|float(0)
+                              /
+                              (states('sensor.debug_akku_energie_verfuegbar')|float(0) + 0.0001)
+                            ) %}
+                          {% if ratio >= 1.0 %} red {% elif ratio >= 0.7 %}
+                          amber {% else %} green {% endif %}
+                        tap_action:
+                          action: more-info
+                          entity: sensor.debug_energiedefizit_bis_pv_deckung
+                      - type: custom:mushroom-template-card
+                        primary: Forecast Qualität
+                        secondary: |
+                          Fehler {{ states('sensor.pv_fehler_prozent') }} %
+                        icon: mdi:weather-partly-cloudy
+                        icon_color: >
+                          {% set p = states('sensor.pv_fehler_prozent')|float(0)
+                          %} {% if p|abs >= 35 %} red {% elif p|abs >= 20 %}
+                          amber {% else %} green {% endif %}
+                        tap_action:
+                          action: more-info
+                          entity: sensor.pv_fehler_prozent
+          - type: vertical-stack
+            cards:
+              - type: history-graph
+                title: PV vs Last Entscheidung
+                hours_to_show: 24
+                refresh_interval: 60
+                entities:
+                  - entity: sensor.pv_live
+                    name: PV Live
+                  - entity: sensor.pv_forecast_korrigiert
+                    name: PV Forecast korrigiert
+                  - entity: sensor.last_effektiv_fur_reserve_floor_1000w
+                    name: Last effektiv
+                  - entity: sensor.last_fur_berechnung_30min
+                    name: Last Ø30min
+          - type: vertical-stack
+            cards:
+              - type: history-graph
+                title: Forecast Fehler
+                hours_to_show: 24
+                refresh_interval: 60
+                entities:
+                  - entity: sensor.pv_fehler_prozent
+                    name: Fehler %
+                  - entity: sensor.pv_fehler_live_forecast_korr
+                    name: Fehler Watt
+        column_span: 1
+      - type: grid
+        cards:
+          - type: history-graph
+            title: PV Live vs Prognose
+            hours_to_show: 6
+            refresh_interval: 60
+            entities:
+              - entity: sensor.pv_live
+                name: PV Live
+              - entity: sensor.pv_forecast_jetzt
+                name: Forecast roh (jetzt)
+              - entity: sensor.pv_forecast_korrigiert
+                name: Forecast korrigiert
+          - type: history-graph
+            title: SOC / Reserve
+            hours_to_show: 6
+            refresh_interval: 60
+            entities:
+              - entity: sensor.emma_batterieladung
+                name: SOC
+              - entity: sensor.backup_reserve_ziel
+                name: Reserve Ziel
+              - entity: number.wechselrichter_backup_power_ladestand
+                name: Reserve Setpoint
+            grid_options:
+              columns: 12
+              rows: 4
+          - type: vertical-stack
+            cards:
+              - type: history-graph
+                title: Forecast Korrekturfaktor
+                hours_to_show: 48
+                refresh_interval: 60
+                entities:
+                  - entity: sensor.pv_forecast_korrekturfaktor
+                    name: Korrekturfaktor
+              - type: history-graph
+                title: Defizit vs Akku Energie
+                hours_to_show: 24
+                refresh_interval: 60
+                entities:
+                  - entity: sensor.debug_energiedefizit_bis_pv_deckung
+                    name: Energiedefizit
+                  - entity: sensor.debug_akku_energie_verfuegbar
+                    name: Akku Energie
+      - type: grid
+        cards:
+          - type: tile
+            entity: sensor.backup_ampel_farbe
+          - type: tile
+            entity: sensor.backup_ampel_status
+          - type: tile
+            entity: sensor.backup_reserve_delta_ziel_ist
+          - type: tile
+            entity: sensor.backup_reserve_mindestwert
+          - type: tile
+            entity: sensor.backup_reserve_ziel
+          - type: tile
+            entity: sensor.debug_akku_energie_verfugbar
+          - type: tile
+            entity: sensor.debug_energiedefizit_bis_pv_deckung
+          - type: tile
+            entity: sensor.emma_last_30min_durchschnitt
+          - type: tile
+            entity: sensor.forecastsolar_raw_2
+          - type: tile
+            entity: sensor.last_effektiv_fur_reserve_floor_1000w
+          - type: tile
+            entity: sensor.last_fur_berechnung_o_30min
+          - type: tile
+            entity: sensor.minuten_bis_pv_effektive_last_deckt
+          - type: tile
+            entity: sensor.pv_fehler_live_forecast_korr
+          - type: tile
+            entity: sensor.pv_fehler_prozent
+          - type: tile
+            entity: sensor.pv_forecast_jetzt
+          - type: tile
+            entity: sensor.pv_forecast_korrekturfaktor
+          - type: tile
+            entity: sensor.pv_forecast_korrekturfaktor_30min_durchschnitt
+          - type: tile
+            entity: sensor.pv_forecast_korrekturfaktor_raw
+          - type: tile
+            entity: sensor.pv_forecast_korrigiert
+          - type: tile
+            entity: sensor.pv_live
+          - type: tile
+            entity: sensor.pv_zeitpunkt_deckt_effektive_last
+          - type: tile
+            entity: sensor.pv_zielmodus
+        column_span: 1
+    header:
+      layout: center
+      badges_position: bottom
+      badges_wrap: wrap
+    badges: []
+    type: sections
+    max_columns: 4
+    cards: []
