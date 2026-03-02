@@ -72,6 +72,7 @@ template:
       ent_soc_pct: "sensor.emma_batterieladung"
       ent_batt_cap_kwh: "sensor.emma_bewertete_ess_kapazitat"
       ent_reserve_setpoint_pct: "number.wechselrichter_backup_power_ladestand"
+      ent_grid_power_w: "sensor.emma_leistung_2"  # Netz-Wirkleistung (+Import / -Export)
 
       # Calculation constants:
       cfg_floor_load_w: 1000          # blackout minimum load assumption
