@@ -442,8 +442,22 @@ template:
             {% if tgt > maxr %}{% set tgt = maxr %}{% endif %}
           {% endif %}
 
-          {# SOC protection (optional): cap to largest step <= SOC #}
-          {% if soc_cap == 1 %}
+          {# --- PV-only uplift guard (no grid charging) --- #}
+          {% set pv   = states('sensor.pv_live') | float(0) %}
+          {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(0) %}
+          {% set grid = states(ent_grid_power_w) | float(0) %}
+
+          {# Huawei EMMA Wirkleistung: + = Import (Netzbezug), - = Export (Einspeisung) #}
+          {% set grid_import = grid %}
+
+          {% set pv_surplus = pv - load %}
+          {% set can_uplift =
+               (grid_import <= (cfg_grid_import_margin_w|float(100))) and
+               (pv_surplus >= (cfg_pv_surplus_margin_w|float(500)))
+          %}
+
+          {# SOC protection: nur aktiv, wenn uplift NICHT erlaubt ist #}
+          {% if soc_cap == 1 and not can_uplift %}
             {% set soc_step = ((soc / step) | round(0, 'floor')) * step %}
             {% if soc_step < 0 %}{% set soc_step = 0 %}{% endif %}
             {% set tgt = [tgt, soc_step] | min %}
@@ -601,7 +615,7 @@ automation:
       - variables:
           target: "{{ states('sensor.backup_reserve_ziel') | float(0) }}"
           current: "{{ states('number.wechselrichter_backup_power_ladestand') | float(0) }}"
-          min_delta: "{{ cfg_min_write_delta_pct | float(1) }}"
+          min_delta: 1
       - condition: template
         value_template: >
           {{ target >= 0 and target <= 80 and ((target - current) | abs >= (min_delta | float(1))) }}
