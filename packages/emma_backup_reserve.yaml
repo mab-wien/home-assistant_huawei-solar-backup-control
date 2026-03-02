@@ -79,7 +79,7 @@ template:
       cfg_step_pct: 10                # reserve step size
       cfg_reserve_max_pct: 80         # cap reserve for longevity
       cfg_corr_min: 0.70              # clamp correction factor min
-      cfg_corr_max: 1.30              # clamp correction factor max
+      cfg_corr_max: 1.60              # clamp correction factor max
       cfg_corr_min_w: 100             # only compute corr factor above this PV level
       cfg_tomorrow_hour: 7            # fallback "tomorrow morning" hour (local)
       cfg_fallback_order: "peak_then_tomorrow"  # or "tomorrow_then_peak"
