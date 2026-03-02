@@ -197,21 +197,20 @@ The system exposes:
 These allow full transparency of decision logic.
 
 
-### PV-only battery charging (no grid charging)
+### PV-only Nachladen (ohne Netzladen)
 
-The system allows the backup reserve setpoint to increase above the current
-battery SOC **only when sufficient PV surplus is available**.
+Damit der Wechselrichter den Akku **bei PV-Überschuss** wieder aktiv bis zum Reserve-Setpoint anheben darf, aber **niemals aus dem Netz** lädt, wird zusätzlich die Netz-Wirkleistung ausgewertet:
 
-Conditions:
-- Grid import must be below `cfg_grid_import_margin_w`
-- PV surplus must exceed `cfg_pv_surplus_margin_w`
+- `ent_grid_power_w` (bei dir: `sensor.emma_leistung_2`)
+  - **+W = Netzbezug (Import)**
+  - **−W = Einspeisung (Export)**
 
-This ensures the battery is only charged from **solar energy**, never from
-the grid due to reserve setpoint adjustments.
+Uplift (Reserve darf über aktuellen SOC steigen) ist nur erlaubt, wenn:
+
 - Netzbezug ≤ `cfg_grid_import_margin_w` (Default: 100 W)
 - PV-Überschuss (PV Live − effektive Last) ≥ `cfg_pv_surplus_margin_w` (Default: 500 W)
 
-New Debug-Sensors:
+Neue Debug-Sensoren dafür:
 
 - `sensor.debug_grid_import_w`
 - `sensor.debug_pv_uberschuss_pv_last_eff`
