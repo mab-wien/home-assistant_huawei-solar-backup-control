@@ -541,6 +541,40 @@ template:
             0
           {% endif %}
       
+
+      - name: "Debug Grid Import (W)"
+        unique_id: debug_grid_import_w
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {# + = Import (Netzbezug), - = Export (Einspeisung) #}
+          {{ states(ent_grid_power_w) | float(0) | round(0) }}
+
+      - name: "Debug PV Überschuss (PV - Last eff.)"
+        unique_id: debug_pv_surplus_w
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set pv = states('sensor.pv_live') | float(0) %}
+          {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(0) %}
+          {{ (pv - load) | round(0) }}
+
+      - name: "Debug PV-only Uplift erlaubt"
+        unique_id: debug_pv_only_uplift_erlaubt
+        state: >
+          {% set pv = states('sensor.pv_live') | float(0) %}
+          {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(0) %}
+          {% set grid_import = states(ent_grid_power_w) | float(0) %}
+          {% set pv_surplus = pv - load %}
+          {% set ok =
+               (grid_import <= (cfg_grid_import_margin_w|float(100))) and
+               (pv_surplus >= (cfg_pv_surplus_margin_w|float(500)))
+          %}
+          {{ 'on' if ok else 'off' }}
+
+      
 ############################################
 # 4) Automation: write reserve target to inverter setpoint only when needed
 ############################################
