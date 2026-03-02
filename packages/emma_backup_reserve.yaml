@@ -487,60 +487,60 @@ template:
 ############################################################
 # Extra Debug Sensors (für spätere Optimierung / Diagramme)
 ############################################################
-- name: "PV Forecast korrigiert"
-  unique_id: emma_backup_pv_forecast_corr
-  unit_of_measurement: "W"
-  device_class: power
-  state_class: measurement
-  state: >
-    {% set fc = states('sensor.pv_forecast_jetzt') | float(0) %}
-    {% set k  = states('sensor.pv_forecast_korrekturfaktor') | float(1.0) %}
-    {{ (fc * k) | round(0) }}
-
-- name: "PV Fehler (Live - Forecast korr.)"
-  unique_id: emma_backup_pv_error_w
-  unit_of_measurement: "W"
-  device_class: power
-  state_class: measurement
-  state: >
-    {% set live = states('sensor.pv_live') | float(0) %}
-    {% set corr = states('sensor.pv_forecast_korrigiert') | float(0) %}
-    {{ (live - corr) | round(0) }}
-
-- name: "PV Fehler Prozent"
-  unique_id: emma_backup_pv_error_pct
-  unit_of_measurement: "%"
-  state_class: measurement
-  state: >
-    {% set corr = states('sensor.pv_forecast_korrigiert') | float(0) %}
-    {% set err  = states('sensor.pv_fehler_live_forecast_korr') | float(0) %}
-    {% if corr > 50 %}
-      {{ ((err / corr) * 100) | round(1) }}
-    {% else %}
-      0
-    {% endif %}
-
-- name: "Backup Reserve Delta (Ziel-Ist)"
-  unique_id: emma_backup_reserve_delta
-  unit_of_measurement: "%"
-  state_class: measurement
-  state: >
-    {% set tgt = states('sensor.backup_reserve_ziel') | float(0) %}
-    {% set cur = states('number.wechselrichter_backup_power_ladestand') | float(0) %}
-    {{ (tgt - cur) | round(0) }}
-
-- name: "Defizit Verhältnis (Need/Avail)"
-  unique_id: emma_backup_deficit_ratio
-  state_class: measurement
-  state: >
-    {% set need  = states('sensor.debug_energiedefizit_bis_pv_deckung') | float(0) %}
-    {% set avail = states('sensor.debug_akku_energie_verfuegbar') | float(0) %}
-    {% if avail > 0 %}
-      {{ (need / avail) | round(3) }}
-    {% else %}
-      0
-    {% endif %}
-
+      - name: "PV Forecast korrigiert"
+        unique_id: emma_backup_pv_forecast_corr
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set fc = states('sensor.pv_forecast_jetzt') | float(0) %}
+          {% set k  = states('sensor.pv_forecast_korrekturfaktor') | float(1.0) %}
+          {{ (fc * k) | round(0) }}
+      
+      - name: "PV Fehler (Live - Forecast korr.)"
+        unique_id: emma_backup_pv_error_w
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set live = states('sensor.pv_live') | float(0) %}
+          {% set corr = states('sensor.pv_forecast_korrigiert') | float(0) %}
+          {{ (live - corr) | round(0) }}
+      
+      - name: "PV Fehler Prozent"
+        unique_id: emma_backup_pv_error_pct
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set corr = states('sensor.pv_forecast_korrigiert') | float(0) %}
+          {% set err  = states('sensor.pv_fehler_live_forecast_korr') | float(0) %}
+          {% if corr > 50 %}
+            {{ ((err / corr) * 100) | round(1) }}
+          {% else %}
+            0
+          {% endif %}
+      
+      - name: "Backup Reserve Delta (Ziel-Ist)"
+        unique_id: emma_backup_reserve_delta
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set tgt = states('sensor.backup_reserve_ziel') | float(0) %}
+          {% set cur = states('number.wechselrichter_backup_power_ladestand') | float(0) %}
+          {{ (tgt - cur) | round(0) }}
+      
+      - name: "Defizit Verhältnis (Need/Avail)"
+        unique_id: emma_backup_deficit_ratio
+        state_class: measurement
+        state: >
+          {% set need  = states('sensor.debug_energiedefizit_bis_pv_deckung') | float(0) %}
+          {% set avail = states('sensor.debug_akku_energie_verfuegbar') | float(0) %}
+          {% if avail > 0 %}
+            {{ (need / avail) | round(3) }}
+          {% else %}
+            0
+          {% endif %}
+      
 ############################################
 # 4) Automation: write reserve target to inverter setpoint only when needed
 ############################################
