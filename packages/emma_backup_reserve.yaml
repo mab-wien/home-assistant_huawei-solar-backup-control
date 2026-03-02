@@ -72,11 +72,6 @@ template:
       ent_soc_pct: "sensor.emma_batterieladung"
       ent_batt_cap_kwh: "sensor.emma_bewertete_ess_kapazitat"
       ent_reserve_setpoint_pct: "number.wechselrichter_backup_power_ladestand"
-      ent_grid_power_w: "sensor.emma_leistung_2"  # Netz-Wirkleistung (+Import / -Export)
-
-      # PV-only uplift (Akkunachladung nur bei PV-Überschuss, niemals aus dem Netz):
-      cfg_grid_import_margin_w: 100   # W  (Import-Toleranz gegen Rauschen)
-      cfg_pv_surplus_margin_w: 500    # W  (PV muss Last um diesen Wert übertreffen)
 
       # Calculation constants:
       cfg_floor_load_w: 1000          # blackout minimum load assumption
@@ -407,7 +402,17 @@ template:
           {% set cap = states(ent_batt_cap_kwh) | float(0) %}
           {% set need = states('sensor.debug_energiedefizit_bis_pv_deckung') | float(0) %}
           {% set eff = cfg_eff_discharge | float(0.9) %}
-          {% set maxr = cfg_reserve_max_- name: "Backup Reserve Ziel"
+          {% set maxr = cfg_reserve_max_pct | float(80) %}
+          {% if cap <= 0 %}
+            {{ maxr | round(0) }}
+          {% else %}
+            {% set raw = (need / eff) / cap * 100 %}
+            {% if raw < 0 %}{% set raw = 0 %}{% endif %}
+            {% if raw > maxr %}{% set raw = maxr %}{% endif %}
+            {{ raw | round(1) }}
+          {% endif %}
+
+      - name: "Backup Reserve Ziel"
         unique_id: backup_reserve_ziel
         unit_of_measurement: "%"
         state: >
@@ -430,26 +435,10 @@ template:
             {% if tgt > maxr %}{% set tgt = maxr %}{% endif %}
           {% endif %}
 
-          {# --- PV-only uplift guard (no grid charging) --- #}
-          {% set pv   = states('sensor.pv_live') | float(0) %}
-          {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(0) %}
-          {% set grid = states(ent_grid_power_w) | float(0) %}
-
-          {# Huawei EMMA Wirkleistung: + = Import (Netzbezug), - = Export (Einspeisung) #}
-          {% set grid_import = grid %}
-
-          {% set pv_surplus = pv - load %}
-          {% set can_uplift =
-               (grid_import <= (cfg_grid_import_margin_w|float(100))) and
-               (pv_surplus >= (cfg_pv_surplus_margin_w|float(500)))
-          %}
-
-          {# SOC protection: nur aktiv, wenn uplift NICHT erlaubt ist #}
-          {% if soc_cap == 1 and not can_uplift %}
+          {# SOC protection (optional): cap to largest step <= SOC #}
+          {% if soc_cap == 1 %}
             {% set soc_step = ((soc / step) | round(0, 'floor')) * step %}
             {% if soc_step < 0 %}{% set soc_step = 0 %}{% endif %}
-            {% set tgt = [tgt, soc_step] | min %}
-          {% endif %}
             {% set tgt = [tgt, soc_step] | min %}
           {% endif %}
 
@@ -459,7 +448,6 @@ template:
           {% else %}
             {{ tgt | round(0) }}
           {% endif %}
-
 
       ############################################################
       # Status + Farbe (consistent)
@@ -553,39 +541,6 @@ template:
             0
           {% endif %}
       
-
-      - name: "Debug Grid Import (W)"
-        unique_id: debug_grid_import_w
-        unit_of_measurement: "W"
-        device_class: power
-        state_class: measurement
-        state: >
-          {# + = Import (Netzbezug), - = Export (Einspeisung) #}
-          {{ states(ent_grid_power_w) | float(0) | round(0) }}
-
-      - name: "Debug PV Überschuss (PV - Last eff.)"
-        unique_id: debug_pv_surplus_w
-        unit_of_measurement: "W"
-        device_class: power
-        state_class: measurement
-        state: >
-          {% set pv = states('sensor.pv_live') | float(0) %}
-          {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(0) %}
-          {{ (pv - load) | round(0) }}
-
-      - name: "Debug PV-only Uplift erlaubt"
-        unique_id: debug_pv_only_uplift_erlaubt
-        state: >
-          {% set pv = states('sensor.pv_live') | float(0) %}
-          {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(0) %}
-          {% set grid_import = states(ent_grid_power_w) | float(0) %}
-          {% set pv_surplus = pv - load %}
-          {% set ok =
-               (grid_import <= (cfg_grid_import_margin_w|float(100))) and
-               (pv_surplus >= (cfg_pv_surplus_margin_w|float(500)))
-          %}
-          {{ 'on' if ok else 'off' }}
-
 ############################################
 # 4) Automation: write reserve target to inverter setpoint only when needed
 ############################################
