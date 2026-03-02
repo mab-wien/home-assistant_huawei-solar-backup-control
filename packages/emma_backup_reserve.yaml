@@ -200,26 +200,25 @@ template:
           {% set eod_ts = as_timestamp(now().replace(hour=23, minute=59, second=59, microsecond=0)) %}
           {% set load = states('sensor.last_effektiv_fur_reserve_floor_1000w') | float(cfg_floor_load_w) %}
           {% set k = states('sensor.pv_forecast_korrekturfaktor') | float(1.0) %}
-          {% set cover_ts = 0 %}
-          {% set peak_ts = 0 %}
-          {% set peak_w = -1 %}
+          {% set ns = namespace(cover_ts=0, peak_ts=0, peak_w=0) %}
+          
           {% if watts is mapping and watts | count > 0 %}
             {% for t,p in (watts | dictsort) %}
               {% set ts = as_timestamp(t, default=0) %}
               {% if ts > now_ts and ts <= eod_ts %}
                 {% set pv = (p | float(0)) * k %}
-                {% if pv > peak_w %}
-                  {% set peak_w = pv %}
-                  {% set peak_ts = ts %}
+                {% if pv > ns.peak_w %}
+                  {% set ns.peak_w = pv %}
+                  {% set ns.peak_ts = ts %}
                 {% endif %}
-                {% if cover_ts == 0 and pv >= load %}
-                  {% set cover_ts = ts %}
+                {% if ns.cover_ts == 0 and pv >= load %}
+                  {% set ns.cover_ts = ts %}
                 {% endif %}
               {% endif %}
             {% endfor %}
-            {% if cover_ts > 0 %}
+            {% if ns.cover_ts > 0 %}
               cover_today
-            {% elif peak_ts > 0 %}
+            {% elif ns.peak_ts > 0 %}
               peak_today
             {% else %}
               tomorrow_morning
