@@ -179,6 +179,7 @@ The system exposes a status sensor:
 
 Designed for dashboard visualization.
 
+![Backup Reserve Dashboard Demo](dashboard/backup-reserve-dashboard_demo.jpg)
 ---
 
 ## Debug Sensors
