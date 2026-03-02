@@ -185,7 +185,7 @@ template:
           {% set fc = states('sensor.pv_forecast_jetzt') | float(0) %}
           {% if live >= (cfg_corr_min_w | float(100)) and fc >= (cfg_corr_min_w | float(100)) %}
             {% set r = live / fc %}
-            {% set r = [ [r, cfg_corr_min|float(0.7)] | max, cfg_corr_max|float(1.3) ] | min %}
+            {% set r = [ [r, cfg_corr_min|float(0.7)] | max, cfg_corr_max|float(1.6) ] | min %}
             {{ r | round(2) }}
           {% else %}
             1.00
