@@ -318,6 +318,7 @@ template:
         unique_id: debug_akku_energie_verfuegbar
         unit_of_measurement: "kWh"
         device_class: energy
+        state_class: measurement
         state: >
           {% set cap = states(ent_batt_cap_kwh) | float(0) %}
           {% set soc = states(ent_soc_pct) | float(0) %}
@@ -331,6 +332,7 @@ template:
         unique_id: debug_energiedefizit_bis_pv_deckung
         unit_of_measurement: "kWh"
         device_class: energy
+        state_class: measurement
         state: >
           {% set watts = state_attr(ent_forecast_raw, 'watts') %}
           {% set now_ts = as_timestamp(now()) %}
@@ -548,7 +550,7 @@ template:
         device_class: power
         state_class: measurement
         state: >
-          {# + = Import (Netzbezug), - = Export (Einspeisung) #}
+          # { + = Import (Netzbezug), - = Export (Einspeisung) }
           {{ states(ent_grid_power_w) | float(0) | round(0) }}
 
       - name: "Debug PV Überschuss (PV - Last eff.)"
@@ -594,10 +596,10 @@ automation:
       - variables:
           target: "{{ states('sensor.backup_reserve_ziel') | float(0) }}"
           current: "{{ states('number.wechselrichter_backup_power_ladestand') | float(0) }}"
-          min_delta: 1
+          min_delta: "{{ cfg_min_write_delta_pct | float(1) }}"
       - condition: template
         value_template: >
-          {{ target >= 0 and target <= 80 and ((target - current) | abs >= min_delta) }}
+          {{ target >= 0 and target <= 80 and ((target - current) | abs >= (min_delta | float(1))) }}
       - action: number.set_value
         target:
           entity_id: number.wechselrichter_backup_power_ladestand
